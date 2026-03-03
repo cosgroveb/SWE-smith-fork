@@ -677,6 +677,7 @@ class Registry(UserDict):
             "RepoProfile",
             "PythonProfile",
             "GoProfile",
+            "RubyProfile",
             "RustProfile",
         }:
             # TODO: Update for new languages
