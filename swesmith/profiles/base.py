@@ -179,6 +179,10 @@ class RepoProfile(ABC, metaclass=SingletonMeta):
 
     @property
     def mirror_url(self) -> str:
+        """Return mirror URL (local path or git URL)"""
+        local_repo_path = os.getenv("SWESMITH_LOCAL_REPO")
+        if local_repo_path and os.path.isdir(local_repo_path):
+            return local_repo_path
         if self._is_repo_private():
             return f"git@github.com:{self.mirror_name}.git"
         return f"https://github.com/{self.mirror_name}"
@@ -276,13 +280,18 @@ class RepoProfile(ABC, metaclass=SingletonMeta):
         return self._cache_test_paths
 
     def _mirror_exists(self):
-        """Check if mirror repository exists under organization"""
+        """Check if mirror repository exists under organization or as local path"""
         if self._cache_mirror_exists is not True:
-            try:
-                self.api.repos.get(owner=self.org_gh, repo=self.repo_name)
+            # Check for local repository path first
+            local_repo_path = os.getenv("SWESMITH_LOCAL_REPO")
+            if local_repo_path and os.path.isdir(local_repo_path):
                 self._cache_mirror_exists = True
-            except:
-                self._cache_mirror_exists = False
+            else:
+                try:
+                    self.api.repos.get(owner=self.org_gh, repo=self.repo_name)
+                    self._cache_mirror_exists = True
+                except:
+                    self._cache_mirror_exists = False
         return self._cache_mirror_exists
 
     def _prepare_dockerfile(self, content: str) -> str:
@@ -407,30 +416,41 @@ class RepoProfile(ABC, metaclass=SingletonMeta):
         )
 
     def clone(self, dest: str | None = None) -> tuple[str, bool]:
-        """Clone repository locally"""
+        """Clone repository locally (from git URL or local path)"""
         if not self._mirror_exists():
             raise ValueError(
                 "Mirror clone repo must be created first (call .create_mirror)"
             )
         dest = self.repo_name if not dest else dest
         if not os.path.exists(dest):
-            self._configure_ssh_env()
-            clone_cmd = f"git clone {self.mirror_url} {dest}"
-            subprocess.run(
-                clone_cmd,
-                check=True,
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            # Always set SSH push URL (writes always use SSH)
-            subprocess.run(
-                f"git -C {dest} remote set-url --push origin {self._mirror_ssh_url}",
-                check=True,
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            url = self.mirror_url
+            local_repo_path = os.getenv("SWESMITH_LOCAL_REPO")
+
+            # If mirror_url is a local directory, use cp -r instead of git clone
+            if local_repo_path and os.path.isdir(local_repo_path) and url == local_repo_path:
+                try:
+                    shutil.copytree(url, dest)
+                except Exception as e:
+                    raise RuntimeError(f"Failed to copy local repository from {url} to {dest}: {e}")
+            else:
+                # Use git clone for remote URLs
+                self._configure_ssh_env()
+                clone_cmd = f"git clone {url} {dest}"
+                subprocess.run(
+                    clone_cmd,
+                    check=True,
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                # Always set SSH push URL (writes always use SSH)
+                subprocess.run(
+                    f"git -C {dest} remote set-url --push origin {self._mirror_ssh_url}",
+                    check=True,
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
             return dest, True
         else:
             return dest, False
